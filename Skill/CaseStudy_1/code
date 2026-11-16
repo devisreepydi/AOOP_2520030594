@@ -1,0 +1,349 @@
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+
+public class CaseStudy1 {
+
+    // 1. Currency
+    enum Currency {
+        EUR(2), USD(2), JPY(0), KWD(3);
+
+        private final int minorUnits;
+
+        Currency(int minorUnits) {
+            this.minorUnits = minorUnits;
+        }
+
+        public int getMinorUnits() {
+            return minorUnits;
+        }
+    }
+
+    // 2. Money Value Object
+    static final class Money {
+        private final long minor;
+        private final Currency currency;
+
+        private Money(long minor, Currency currency) {
+            if (minor < 0) {
+                throw new IllegalArgumentException("Money cannot be negative");
+            }
+            this.minor = minor;
+            this.currency = Objects.requireNonNull(currency);
+        }
+
+        public static Money of(String amount, Currency currency) {
+            BigDecimal value = new BigDecimal(amount);
+
+            if (value.signum() < 0) {
+                throw new IllegalArgumentException("Price cannot be negative");
+            }
+
+            value = value.setScale(
+                currency.getMinorUnits(),
+                RoundingMode.UNNECESSARY
+            );
+
+            long minor = value.movePointRight(
+                currency.getMinorUnits()
+            ).longValueExact();
+
+            return new Money(minor, currency);
+        }
+
+        public Money plus(Money other) {
+            requireSame(other);
+            return new Money(
+                Math.addExact(minor, other.minor), currency
+            );
+        }
+
+        public Money times(Quantity quantity) {
+            return new Money(
+                Math.multiplyExact(minor, quantity.value()), currency
+            );
+        }
+
+        public Money minus(Percentage percentage) {
+            BigDecimal result = BigDecimal.valueOf(minor)
+                .multiply(BigDecimal.valueOf(
+                    10000 - percentage.basisPoints
+                ))
+                .divide(
+                    BigDecimal.valueOf(10000),
+                    0,
+                    RoundingMode.HALF_EVEN
+                );
+
+            return new Money(result.longValueExact(), currency);
+        }
+
+        private void requireSame(Money other) {
+            if (currency != other.currency) {
+                throw new IllegalArgumentException(
+                    "Cannot combine different currencies"
+                );
+            }
+        }
+
+        @Override
+        public String toString() {
+            return currency + " " +
+                BigDecimal.valueOf(minor, currency.getMinorUnits())
+                    .setScale(currency.getMinorUnits())
+                    .toPlainString();
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) return true;
+            if (!(obj instanceof Money)) return false;
+
+            Money other = (Money) obj;
+            return minor == other.minor &&
+                   currency == other.currency;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(minor, currency);
+        }
+    }
+
+    // 3. Percentage Value Object
+    static final class Percentage {
+        private final int basisPoints;
+
+        private Percentage(int basisPoints) {
+            this.basisPoints = basisPoints;
+        }
+
+        public static Percentage ofBasisPoints(int bp) {
+            if (bp < 0 || bp > 10000) {
+                throw new IllegalArgumentException(
+                    "Discount must be between 0 and 100 percent"
+                );
+            }
+            return new Percentage(bp);
+        }
+
+        public Money applyTo(Money money) {
+            return money.minus(this);
+        }
+    }
+
+    // 4. Quantity Value Object
+    static final class Quantity {
+        private final int value;
+
+        private Quantity(int value) {
+            this.value = value;
+        }
+
+        public static Quantity of(int value) {
+            if (value < 1) {
+                throw new IllegalArgumentException(
+                    "Quantity must be at least 1"
+                );
+            }
+            return new Quantity(value);
+        }
+
+        public int value() {
+            return value;
+        }
+    }
+
+    // 5. Product Entity
+    static class Product {
+        private final String sku;
+        private String name;
+        private Money price;
+        private Percentage discount;
+
+        public Product(String sku, String name,
+                       Money price, Percentage discount) {
+            if (sku == null || sku.trim().isEmpty()) {
+                throw new IllegalArgumentException("SKU is required");
+            }
+
+            this.sku = sku;
+            this.name = Objects.requireNonNull(name);
+            this.price = Objects.requireNonNull(price);
+            this.discount = Objects.requireNonNull(discount);
+        }
+
+        public String getSku() {
+            return sku;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public Money getPrice() {
+            return price;
+        }
+
+        public Money getDiscountedPrice() {
+            return discount.applyTo(price);
+        }
+
+        public void updateDetails(String name, Money price,
+                                  Percentage discount) {
+            this.name = Objects.requireNonNull(name);
+            this.price = Objects.requireNonNull(price);
+            this.discount = Objects.requireNonNull(discount);
+        }
+    }
+
+    // 6. Cart Item
+    static class CartItem {
+        private final Product product;
+        private int quantity;
+
+        public CartItem(Product product, Quantity quantity) {
+            this.product = Objects.requireNonNull(product);
+            this.quantity = quantity.value();
+        }
+
+        public void addQuantity(Quantity quantity) {
+            quantity = Objects.requireNonNull(quantity);
+            this.quantity = Math.addExact(
+                this.quantity, quantity.value()
+            );
+        }
+
+        public Money getTotal() {
+            return product.getDiscountedPrice()
+                .times(Quantity.of(quantity));
+        }
+
+        public Product getProduct() {
+            return product;
+        }
+
+        public int getQuantity() {
+            return quantity;
+        }
+    }
+
+    // 7. Cart Entity / Aggregate Root
+    static class Cart {
+        private final String cartId;
+        private final List<CartItem> items = new ArrayList<>();
+
+        public Cart(String cartId) {
+            if (cartId == null || cartId.trim().isEmpty()) {
+                throw new IllegalArgumentException("Cart ID is required");
+            }
+            this.cartId = cartId;
+        }
+
+        public void addProduct(Product product, Quantity quantity) {
+            Objects.requireNonNull(product);
+            Objects.requireNonNull(quantity);
+
+            for (CartItem item : items) {
+                if (item.getProduct().getSku().equals(product.getSku())) {
+                    item.addQuantity(quantity);
+                    return;
+                }
+            }
+
+            items.add(new CartItem(product, quantity));
+        }
+
+        public Money getTotal() {
+            if (items.isEmpty()) {
+                throw new IllegalStateException("Cart is empty");
+            }
+
+            Money total = items.get(0).getTotal();
+
+            for (int i = 1; i < items.size(); i++) {
+                total = total.plus(items.get(i).getTotal());
+            }
+
+            return total;
+        }
+
+        public void displayCart() {
+            System.out.println("\nCart ID: " + cartId);
+            System.out.println("----------------------------");
+
+            for (CartItem item : items) {
+                System.out.println(
+                    item.getProduct().getName()
+                    + " | Quantity: " + item.getQuantity()
+                    + " | Total: " + item.getTotal()
+                );
+            }
+
+            System.out.println("----------------------------");
+            System.out.println("Cart Total: " + getTotal());
+        }
+    }
+
+    // 8. Main Method
+    public static void main(String[] args) {
+
+        System.out.println("E-COMMERCE SHOPPING CART");
+        System.out.println("========================");
+
+        Product laptop = new Product(
+            "P101",
+            "Laptop",
+            Money.of("50000.00", Currency.USD),
+            Percentage.ofBasisPoints(1000)
+        );
+
+        Product mouse = new Product(
+            "P102",
+            "Mouse",
+            Money.of("1000.00", Currency.USD),
+            Percentage.ofBasisPoints(500)
+        );
+
+        Cart cart = new Cart("C101");
+
+        cart.addProduct(laptop, Quantity.of(1));
+        cart.addProduct(mouse, Quantity.of(2));
+
+        cart.displayCart();
+
+        // Testing invalid discount
+        System.out.println("\nTesting Invalid Discount:");
+
+        try {
+            Percentage.ofBasisPoints(25000);
+        } catch (IllegalArgumentException e) {
+            System.out.println(e.getMessage());
+        }
+
+        // Testing invalid quantity
+        System.out.println("\nTesting Invalid Quantity:");
+
+        try {
+            Quantity.of(0);
+        } catch (IllegalArgumentException e) {
+            System.out.println(e.getMessage());
+        }
+
+        // Testing different currencies
+        System.out.println("\nTesting Currency Mismatch:");
+
+        try {
+            Money usd = Money.of("100.00", Currency.USD);
+            Money eur = Money.of("100.00", Currency.EUR);
+            usd.plus(eur);
+        } catch (IllegalArgumentException e) {
+            System.out.println(e.getMessage());
+        }
+
+        System.out.println("\nProgram Completed Successfully.");
+    }
+}
